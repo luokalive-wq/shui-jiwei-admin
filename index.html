@@ -82,18 +82,18 @@ input:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,
   <!-- 登录 -->
   <div class="card" id="loginCard">
     <div style="margin-bottom:12px">
-      <label for="email">开发者邮箱（QQ 邮箱）</label>
-      <input id="email" type="email" placeholder="3691480273@qq.com" autocomplete="email">
+      <label for="email">开发者邮箱</label>
+      <input id="email" type="email" placeholder="3691480273@qq.com" autocomplete="username">
     </div>
-    <div class="row" style="align-items:flex-end">
-      <div style="flex:1;min-width:150px">
-        <label for="code">6 位验证码</label>
-        <input id="code" type="text" inputmode="numeric" maxlength="6" placeholder="邮件里的数字">
-      </div>
-      <button class="btn" id="sendBtn" type="button" style="flex:none">发送验证码</button>
-      <button class="btn primary" id="loginBtn" type="button" style="flex:none">登录</button>
+    <div style="margin-bottom:12px">
+      <label for="pw">密码<span class="tip" style="display:inline">（首次使用先点下面“首次设置密码”）</span></label>
+      <input id="pw" type="password" placeholder="至少 6 位" autocomplete="current-password">
     </div>
-    <p class="tip" id="loginTip">只有开发者邮箱能进后台。第一次用会自动注册。</p>
+    <div class="row">
+      <button class="btn primary" id="loginBtn" type="button">密码登录</button>
+      <button class="btn" id="initBtn" type="button">首次设置密码</button>
+    </div>
+    <p class="tip" id="loginTip">开发者后台只认密码登录，不发邮件验证码。</p>
   </div>
 
   <!-- 后台 -->
@@ -185,27 +185,24 @@ function getSession() {
 function saveSession(s) { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); }
 function clearSession() { localStorage.removeItem(SESSION_KEY); }
 
-async function sendOtp(email) {
-  const res = await fetch(CLOUD.url + "/auth/v1/otp", {
-    method: "POST",
-    headers: { apikey: CLOUD.key, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: email, create_user: true,
-      options: { email_redirect_to: location.origin + location.pathname }
-    })
+async function rpc(fn, args) {
+  const res = await fetch(CLOUD.url + "/rest/v1/rpc/" + fn, {
+    method: "POST", headers: headers(), body: JSON.stringify(args || {})
   });
-  if (!res.ok) throw new Error("发送失败 " + res.status + "：" + (await res.text()).slice(0, 100));
+  if (!res.ok) throw new Error("请求失败 " + res.status + "：" + (await res.text()).slice(0, 100));
+  return res.json();
 }
 
-async function verifyOtp(email, token) {
-  const res = await fetch(CLOUD.url + "/auth/v1/verify", {
-    method: "POST",
-    headers: { apikey: CLOUD.key, "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "email", email: email, token: token })
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body.access_token || !body.user) throw new Error("验证码不对或过期");
-  return { email: body.user.email || email, uid: body.user.id, access: body.access_token, refresh: body.refresh_token || "" };
+async function loginWithPw(email, pw) {
+  const r = await rpc("app_login", { p_email: email, p_pw: pw });
+  if (!r || !r.ok) throw new Error("邮箱或密码不对");
+  return r;
+}
+
+async function registerWithPw(email, pw) {
+  const r = await rpc("app_register", { p_email: email, p_pw: pw, p_nick: null });
+  if (!r || !r.ok) throw new Error((r && r.error) || "设置失败");
+  return r;
 }
 
 async function isCreator(email) {
@@ -376,7 +373,7 @@ function setMapPos(lng, lat) {
 
 /* 登录态 */
 async function enterAdmin(session) {
-  const ok = await isCreator(session.email);
+  const ok = session.role === "developer" || (await isCreator(session.email));
   if (!ok) {
     $("#loginCard").style.display = "block";
     $("#admin").style.display = "none";
@@ -384,6 +381,8 @@ async function enterAdmin(session) {
     clearSession();
     return;
   }
+  session.role = "developer";
+  saveSession(session);
   $("#loginCard").style.display = "none";
   $("#admin").style.display = "block";
   await load();
@@ -398,34 +397,38 @@ async function load() {
   }
 }
 
-$("#sendBtn").addEventListener("click", async () => {
-  const email = $("#email").value.trim() || "3691480273@qq.com";
-  $("#sendBtn").disabled = true;
-  $("#loginTip").textContent = "正在发送…";
-  try {
-    await sendOtp(email);
-    $("#loginTip").textContent = "验证码已发到 " + email + "（也可能在垃圾箱）";
-  } catch (e) {
-    $("#loginTip").textContent = e.message;
-  } finally {
-    setTimeout(() => ($("#sendBtn").disabled = false), 900);
-  }
-});
-
 $("#loginBtn").addEventListener("click", async () => {
   const email = $("#email").value.trim() || "3691480273@qq.com";
-  const code = $("#code").value.trim();
-  if (!/^\d{6}$/.test(code)) return toast("验证码是 6 位数字");
+  const pw = $("#pw").value;
+  if (!pw) return toast("先填密码");
   $("#loginBtn").disabled = true;
   try {
-    const s = await verifyOtp(email, code);
-    saveSession(s);
+    const s = await loginWithPw(email, pw);
+    saveSession({ email: s.email, nickname: s.nickname, role: s.role });
     await enterAdmin(s);
     toast("登录成功");
   } catch (e) {
-    toast(e.message);
+    toast(e.message, 3000);
   } finally {
     $("#loginBtn").disabled = false;
+  }
+});
+
+$("#initBtn").addEventListener("click", async () => {
+  const email = $("#email").value.trim() || "3691480273@qq.com";
+  const pw = $("#pw").value;
+  if (!pw || pw.length < 6) return toast("密码至少 6 位");
+  if (!confirm("把 " + email + " 的登录密码设成刚才输入的这个？以后就用它登录。")) return;
+  $("#initBtn").disabled = true;
+  try {
+    const s = await registerWithPw(email, pw);
+    saveSession({ email: s.email, nickname: s.nickname, role: s.role });
+    await enterAdmin(s);
+    toast("密码已设置，已登录");
+  } catch (e) {
+    toast(e.message, 3000);
+  } finally {
+    $("#initBtn").disabled = false;
   }
 });
 
