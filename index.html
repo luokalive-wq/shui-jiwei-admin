@@ -442,11 +442,13 @@ $("#refreshBtn").addEventListener("click", load);
 $("#q").addEventListener("input", renderList);
 
 $("#list").addEventListener("click", async (e) => {
-  const btn = e.target.closest("button");
-  if (!btn) return;
-  const item = btn.closest(".item");
+  const item = e.target.closest(".item");
+  if (!item) return;
   const spot = findSpot(item.dataset.id);
   if (!spot) return;
+  const btn = e.target.closest("button");
+  /* 点整行也能进编辑，不用非点按钮 */
+  if (!btn) return openEditor(spot);
   const act = btn.dataset.act;
 
   if (act === "edit") return openEditor(spot);
@@ -456,13 +458,21 @@ $("#list").addEventListener("click", async (e) => {
   }
   if (act === "del") {
     if (!confirm("确定删除「" + spot.title + "」？删了就找不回来。")) return;
+    btn.disabled = true;
+    btn.textContent = "删除中…";
     try {
       await deleteSpot(spot.id);
-      spots = spots.filter((s) => String(s.id) !== String(spot.id));
-      renderList();
-      toast("已删除");
+      await load();
+      const still = spots.find((s) => String(s.id) === String(spot.id));
+      if (still) {
+        toast("云端没删掉，可能没有删除权限，刷新后再试", 3200);
+      } else {
+        toast("已删除，前台也看不到了");
+      }
     } catch (err) {
-      toast(err.message);
+      btn.disabled = false;
+      btn.textContent = "删除";
+      toast("删除失败：" + err.message, 3200);
     }
   }
 });
@@ -504,21 +514,19 @@ $("#saveBtn").addEventListener("click", async () => {
     lat: lat ? Number(lat) : null
   };
   if (!fields.title) return toast("名称不能空");
+  if (!fields.lng || !fields.lat) return toast("坐标不能空：点「按地址找坐标」或「展开地图点位置」");
   $("#saveBtn").disabled = true;
+  $("#saveBtn").textContent = "保存中…";
   try {
     await patchSpot(editing.id, fields);
-    editing.title = fields.title;
-    editing.address = fields.address;
-    editing.descr = fields.descr;
-    editing.lng = fields.lng;
-    editing.lat = fields.lat;
-    renderList();
+    await load();
     closeEditor();
-    toast("已保存");
+    toast("已保存，前台立刻生效");
   } catch (e) {
-    toast(e.message, 3000);
+    toast("保存失败：" + e.message, 3200);
   } finally {
     $("#saveBtn").disabled = false;
+    $("#saveBtn").textContent = "保存";
   }
 });
 
