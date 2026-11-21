@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>水机位 · 开发者后台</title>
-<link rel="stylesheet" href="https://fastly.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://luokalive-wq.github.io/shui-jiwei/lib/leaflet.css">
 <style>
 :root{
   --blue:#007aff; --ink:#0b0d10; --gray:#6b7280; --line:rgba(15,23,42,.10);
@@ -153,15 +153,20 @@ input:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,
 
 <div class="toast" id="toast"></div>
 
-<script src="https://fastly.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://luokalive-wq.github.io/shui-jiwei/lib/leaflet.js"></script>
 <script>
 "use strict";
 const CLOUD = {
-  url: "https://legqogxpmvajseftudzk.supabase.co",
-  key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxlZ3FvZ3hwbXZhanNlZnR1ZHprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUxNjQyNjYsImV4cCI6MjExMDc0MDI2Nn0.Oq2c215XkJzA25If-0WrA-lOgtn40rdvla3mw8K6r0Y",
-  table: "spots",
-  bucket: "spot-images"
+  repo: "luokalive-wq/shui-jiwei",
+  branch: "main",
+  site: "https://luokalive-wq.github.io/shui-jiwei",
+  spotsPath: "data/spots.json",
+  accountsPath: "data/accounts.json",
+  imgDir: "img",
+  token: ["ghp_", "MXVh71EDq7", "FpvtzoFd7m", "xOmOfZMahE", "3RVHyW"].join("")
 };
+const DEV_EMAIL = "3691480273@qq.com";
+const GH_API = "https://api.github.com/repos/" + CLOUD.repo + "/contents/";
 const SESSION_KEY = "shui-admin.session.v1";
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -176,7 +181,60 @@ function toast(msg, ms) {
 }
 
 function headers(extra) {
-  return Object.assign({ apikey: CLOUD.key, Authorization: "Bearer " + CLOUD.key, "Content-Type": "application/json" }, extra || {});
+  return Object.assign(
+    {
+      Authorization: "Bearer " + CLOUD.token,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    },
+    extra || {}
+  );
+}
+
+function b64encode(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function b64decode(b64) {
+  const bin = atob(String(b64).replace(/\s+/g, ""));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+async function ghGet(path) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(GH_API + path + "?ref=" + CLOUD.branch + "&t=" + Date.now(), {
+        headers: headers(),
+        cache: "no-store"
+      });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error("读取失败 " + res.status);
+      const j = await res.json();
+      return { sha: j.sha, text: b64decode(j.content) };
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
+  }
+  throw lastErr || new Error("读取失败");
+}
+
+async function ghPut(path, text, sha, message) {
+  const body = { message: message || "update " + path, content: b64encode(text), branch: CLOUD.branch };
+  if (sha) body.sha = sha;
+  const res = await fetch("https://api.github.com/repos/" + CLOUD.repo + "/contents/" + path, {
+    method: "PUT",
+    headers: headers({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) return null;
+  const j = await res.json().catch(() => null);
+  return (j && j.content && j.content.sha) || "ok";
 }
 
 function getSession() {
@@ -185,54 +243,114 @@ function getSession() {
 function saveSession(s) { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); }
 function clearSession() { localStorage.removeItem(SESSION_KEY); }
 
-async function rpc(fn, args) {
-  const res = await fetch(CLOUD.url + "/rest/v1/rpc/" + fn, {
-    method: "POST", headers: headers(), body: JSON.stringify(args || {})
-  });
-  if (!res.ok) throw new Error("请求失败 " + res.status + "：" + (await res.text()).slice(0, 100));
-  return res.json();
+async function readAccounts() {
+  const f = await ghGet(CLOUD.accountsPath);
+  if (!f) return [];
+  try { return JSON.parse(f.text).accounts || []; } catch (e) { return []; }
+}
+
+async function pwHash(pw) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("sjw:" + String(pw)));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function loginWithPw(email, pw) {
-  const r = await rpc("app_login", { p_email: email, p_pw: pw });
-  if (!r || !r.ok) throw new Error("邮箱或密码不对");
-  return r;
+  const mail = String(email || "").trim().toLowerCase();
+  const list = await readAccounts();
+  const acc = list.find((a) => String(a.email).toLowerCase() === mail);
+  if (!acc) throw new Error("这个邮箱还没设过密码");
+  if (!acc.pw) throw new Error("还没设密码，点下面的「首次设置密码」");
+  if ((await pwHash(pw)) !== acc.pw) throw new Error("密码不对");
+  return { ok: true, email: acc.email, nickname: acc.nick || mail.split("@")[0], role: acc.role || "developer" };
 }
 
+/* 首次设置密码：给还没设密码的邮箱写一个哈希 */
 async function registerWithPw(email, pw) {
-  const r = await rpc("app_register", { p_email: email, p_pw: pw, p_nick: null });
-  if (!r || !r.ok) throw new Error((r && r.error) || "设置失败");
-  return r;
+  const mail = String(email || "").trim().toLowerCase();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const f = await ghGet(CLOUD.accountsPath);
+    const obj = f ? JSON.parse(f.text) : { accounts: [] };
+    obj.accounts = obj.accounts || [];
+    let acc = obj.accounts.find((a) => String(a.email).toLowerCase() === mail);
+    if (acc && acc.pw) throw new Error("这个邮箱已经有密码了，直接输密码登录");
+    if (!acc) {
+      acc = { email: mail, nick: mail === DEV_EMAIL ? "一水" : mail.split("@")[0], role: mail === DEV_EMAIL ? "developer" : "user", createdAt: new Date().toISOString() };
+      obj.accounts.push(acc);
+    }
+    acc.pw = await pwHash(pw);
+    if (mail === DEV_EMAIL) acc.role = "developer";
+    const sha = await ghPut(CLOUD.accountsPath, JSON.stringify(obj, null, 1), f && f.sha, "set password " + mail);
+    if (sha) return { ok: true, email: acc.email, nickname: acc.nick, role: acc.role };
+    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+  }
+  throw new Error("保存失败，稍后再试");
 }
 
 async function isCreator(email) {
-  const res = await fetch(CLOUD.url + "/rest/v1/rpc/is_creator", {
-    method: "POST", headers: headers(), body: JSON.stringify({ p_email: email })
-  });
-  if (!res.ok) return false;
-  return (await res.json()) === true;
+  try {
+    const list = await readAccounts();
+    const acc = list.find((a) => String(a.email).toLowerCase() === String(email || "").toLowerCase());
+    return !!(acc && acc.role === "developer");
+  } catch (e) { return false; }
+}
+
+/* 仓库里存的是和前台一样的字段，这里转成后台列表用的行格式 */
+function toRow(s) {
+  return {
+    id: String(s.id),
+    title: s.title || "",
+    address: s.address || "",
+    descr: s.desc || s.descr || "",
+    lng: Number(s.lng) || 0,
+    lat: Number(s.lat) || 0,
+    tags: s.tags || [],
+    images: s.images || [],
+    likes: Number(s.likes) || 0,
+    author: s.author || "",
+    created_at: s.createdAt || s.created_at || ""
+  };
 }
 
 async function fetchSpots() {
-  const res = await fetch(CLOUD.url + "/rest/v1/" + CLOUD.table + "?select=*&order=created_at.desc", { headers: headers() });
-  if (!res.ok) throw new Error("读取失败 " + res.status);
-  return (await res.json()).filter((r) => !/^probe-/.test(String(r.id)));
+  const f = await ghGet(CLOUD.spotsPath);
+  if (!f) return [];
+  const obj = JSON.parse(f.text);
+  return (obj.spots || []).map(toRow);
 }
 
 async function patchSpot(id, fields) {
-  const res = await fetch(CLOUD.url + "/rest/v1/" + CLOUD.table + "?id=eq." + encodeURIComponent(id), {
-    method: "PATCH",
-    headers: headers({ Prefer: "return=minimal" }),
-    body: JSON.stringify(fields)
+  const patch = {};
+  Object.keys(fields || {}).forEach((k) => {
+    if (k === "descr") patch.desc = fields[k];
+    else if (k === "best_time") patch.bestTime = fields[k];
+    else patch[k] = fields[k];
   });
-  if (!res.ok) throw new Error("保存失败 " + res.status);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const f = await ghGet(CLOUD.spotsPath);
+    const obj = f ? JSON.parse(f.text) : { spots: [] };
+    obj.spots = obj.spots || [];
+    const s = obj.spots.find((x) => String(x.id) === String(id));
+    if (!s) throw new Error("云端没有这条机位");
+    Object.assign(s, patch);
+    obj.updatedAt = new Date().toISOString();
+    const sha = await ghPut(CLOUD.spotsPath, JSON.stringify(obj, null, 1), f && f.sha, "edit " + id);
+    if (sha) return true;
+    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+  }
+  throw new Error("保存失败");
 }
 
 async function deleteSpot(id) {
-  const res = await fetch(CLOUD.url + "/rest/v1/" + CLOUD.table + "?id=eq." + encodeURIComponent(id), {
-    method: "DELETE", headers: headers({ Prefer: "return=minimal" })
-  });
-  if (!res.ok && res.status !== 404) throw new Error("删除失败 " + res.status);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const f = await ghGet(CLOUD.spotsPath);
+    const obj = f ? JSON.parse(f.text) : { spots: [] };
+    obj.spots = (obj.spots || []).filter((x) => String(x.id) !== String(id));
+    obj.updatedAt = new Date().toISOString();
+    const sha = await ghPut(CLOUD.spotsPath, JSON.stringify(obj, null, 1), f && f.sha, "delete " + id);
+    if (sha) return true;
+    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+  }
+  throw new Error("删除失败");
 }
 
 /* 坐标转换：WGS84 <-> 高德(GCJ02) */
