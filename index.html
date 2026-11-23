@@ -80,7 +80,7 @@ input:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,
   </div>
 
   <!-- 登录 -->
-  <div class="card" id="loginCard">
+  <div class="card" id="loginCard" style="display:none">
     <div style="margin-bottom:12px">
       <label for="email">开发者邮箱</label>
       <input id="email" type="email" placeholder="3691480273@qq.com" autocomplete="username">
@@ -97,14 +97,14 @@ input:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,
   </div>
 
   <!-- 后台 -->
-  <div id="admin" style="display:none">
+  <div id="admin">
     <div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:160px">
         <label for="q">搜索</label>
         <input id="q" type="search" placeholder="机位名 / 地点 / 发布人">
       </div>
       <button class="btn small" id="refreshBtn" type="button">刷新</button>
-      <button class="btn small" id="logoutBtn" type="button">退出</button>
+      <button class="btn small" id="logoutBtn" type="button" style="display:none">退出</button>
     </div>
 
     <div class="stats">
@@ -550,11 +550,7 @@ $("#initBtn").addEventListener("click", async () => {
   }
 });
 
-$("#logoutBtn").addEventListener("click", () => {
-  clearSession();
-  $("#admin").style.display = "none";
-  $("#loginCard").style.display = "block";
-});
+$("#logoutBtn").addEventListener("click", () => location.reload());
 
 $("#refreshBtn").addEventListener("click", load);
 $("#q").addEventListener("input", renderList);
@@ -674,14 +670,9 @@ $("#cancelBtn").addEventListener("click", closeEditor);
 })();
 
 (function boot() {
-  const s = getSession();
-  if (!s) {
-    $("#loginCard").style.display = "block";
-    return;
-  }
-  enterAdmin(s).catch(() => {
-    $("#loginCard").style.display = "block";
-  });
+  $("#loginCard").style.display = "none";
+  $("#admin").style.display = "block";
+  load();
 })();
 </script>
 </body>
